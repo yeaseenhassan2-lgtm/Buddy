@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#050d18">
+<title>Buddy</title>
+<style>
+:root{--cyan:#52dfff;--W:100vw;--H:100vh;--eye:30vh}
+@media (orientation:portrait){:root{--W:100vh;--H:100vw;--eye:30vw}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#050d18;overflow:hidden}
+body{position:relative;width:var(--W);height:var(--H);background:radial-gradient(ellipse at 50% 45%,#0f2a44 0,#07111f 70%);-webkit-user-select:none;user-select:none}
+@media (orientation:portrait){body{position:fixed;top:0;left:0;transform-origin:top left;transform:translateX(100vw) rotate(90deg)}}
+.face{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:inset 0 0 calc(var(--H)*.25) #0a3a5a;transition:box-shadow .4s}
+.float{display:flex;flex-direction:column;align-items:center;animation:float 4s ease-in-out infinite}
+@keyframes float{50%{transform:translateY(-3%)}}
+.eyes{display:flex;gap:calc(var(--W)*.14);transition:transform .4s}
+.look{transform:translate(var(--lx,0px),var(--ly,0px));transition:transform .15s linear}
+.eye{flex:none;width:var(--eye);height:calc(var(--eye)*1.25);transition:transform .4s,opacity .4s}
+.ball{width:100%;height:100%;border-radius:48%;background:radial-gradient(circle at 38% 35%,#c9f6ff 0,var(--cyan) 35%,#1fa8e8 100%);box-shadow:0 0 30px var(--cyan),0 0 80px #248cff;animation:blink 4.5s infinite;transition:box-shadow .4s}
+.eye:nth-child(2) .ball{animation-delay:.05s}
+@keyframes blink{0%,93%,100%{transform:scaleY(1)}96%{transform:scaleY(.06)}}
+.mouth{flex:none;margin-top:calc(var(--H)*.07);width:calc(var(--H)*.18);height:calc(var(--H)*.05);border-bottom:6px solid var(--cyan);border-radius:0 0 100px 100px;filter:drop-shadow(0 0 8px var(--cyan));transition:all .3s}
+/* thinking: three glowing dots (no letters) */
+.dots{position:absolute;top:7%;left:50%;transform:translateX(-50%);display:flex;gap:calc(var(--H)*.03);opacity:0}
+.dots i{width:calc(var(--H)*.035);height:calc(var(--H)*.035);border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+/* states */
+[data-s=listening] .face{box-shadow:inset 0 0 calc(var(--H)*.3) #1590c8}
+[data-s=listening] .eye{transform:scale(1.08)}
+[data-s=listening] .ball{box-shadow:0 0 45px var(--cyan),0 0 110px var(--cyan)}
+[data-s=listening] .mouth{width:calc(var(--H)*.12);height:calc(var(--H)*.03)}
+[data-s=thinking] .eyes{transform:translate(calc(var(--W)*.04),calc(var(--H)*-.05))}
+[data-s=thinking] .mouth{width:calc(var(--H)*.1);height:0;border-radius:0}
+[data-s=thinking] .dots{opacity:1;animation:pulse 1s infinite}
+[data-s=speaking] .mouth{animation:talk .28s infinite alternate;width:calc(var(--H)*.22)}
+[data-s=happy] .eye{transform:scale(1.1)}
+[data-s=happy] .mouth{width:calc(var(--H)*.26);height:calc(var(--H)*.08)}
+@keyframes talk{from{height:calc(var(--H)*.02);border-radius:0 0 100px 100px}to{height:calc(var(--H)*.13);border-radius:50%;border-top:6px solid var(--cyan)}}
+[data-s=idle] .eye{transform:scale(.6);opacity:.6}
+[data-s=idle] .face{box-shadow:inset 0 0 calc(var(--H)*.15) #0a3a5a}
+[data-s=off] .eye,[data-s=paused] .eye{transform:scale(.5);opacity:.35}
+[data-s=off] .ball,[data-s=paused] .ball{box-shadow:none}
+[data-s=off] .mouth,[data-s=paused] .mouth{opacity:.35}
+/* error: red, tired eyes (mic blocked / not supported) */
+[data-s=error] .eye{transform:scale(.7);opacity:.8}
+[data-s=error] .ball{background:radial-gradient(circle at 38% 35%,#ffd0d0 0,#ff5a5a 40%,#c92b2b 100%);box-shadow:0 0 30px #ff4d4d}
+[data-s=error] .mouth{border-color:#ff5a5a;filter:drop-shadow(0 0 8px #ff4d4d);transform:rotate(180deg)}
+@keyframes pulse{50%{opacity:.25}}
+/* hidden debug text: triple-tap the screen to show it */
+#dbg{position:absolute;left:8px;bottom:6px;font:11px monospace;color:#7fa4b8;display:none}
+</style>
+</head>
+<body>
+<div class="face" id="bot" data-s="off">
+  <div class="dots"><i></i><i></i><i></i></div>
+  <div class="float">
+    <div class="look" id="look">
+      <div class="eyes">
+        <div class="eye"><div class="ball"></div></div>
+        <div class="eye"><div class="ball"></div></div>
+      </div>
+    </div>
+    <div class="mouth"></div>
+  </div>
+</div>
+<div id="dbg"></div>
+<video id="cam" playsinline muted autoplay style="position:absolute;width:2px;height:2px;opacity:0;pointer-events:none"></video>
+
+<script>
+const $=id=>document.getElementById(id);
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let state='off',started=false,running=false,paused=false,busy=false,lang='bn-BD',noSpeech=0,fails=0,lastAct=Date.now(),rec=null,lastErr='-';
+
+/* ---------- Sizes in pixels ---------- */
+function fit(){
+  const w=window.innerWidth,h=window.innerHeight,L=Math.max(w,h),S=Math.min(w,h),r=document.documentElement.style;
+  r.setProperty('--W',L+'px');r.setProperty('--H',S+'px');r.setProperty('--eye',Math.round(S*.30)+'px');
+}
+fit();window.addEventListener('resize',fit);window.addEventListener('orientationchange',()=>setTimeout(fit,200));
+
+/* ---------- Face states (no text anywhere) ---------- */
+function setState(s){state=s;$('bot').dataset.s=s;dbg();}
+function activity(){lastAct=Date.now();if(state==='idle')setState('listening');}
+setInterval(()=>{if(state==='listening'&&Date.now()-lastAct>20000)setState('idle');},1000);
+
+/* ---------- Hidden debug (triple-tap) ---------- */
+let taps=[];
+function dbg(){$('dbg').textContent='speech:'+(SR?'yes':'NO')+'  secure:'+window.isSecureContext+'  state:'+state+'  err:'+lastErr;}
+window.addEventListener('pointerdown',()=>{const n=Date.now();taps=taps.filter(t=>n-t<900);taps.push(n);if(taps.length>=3){const d=$('dbg');d.style.display=d.style.display==='block'?'none':'block';taps=[];dbg();}});
+
+/* ---------- Simple local brain (AI comes in the next stage) ---------- */
+const isBangla=t=>/[\u0980-\u09FF]/.test(t);
+const PAUSE=/\b(pause|stop listening|be quiet|go to sleep)\b|থামো|চুপ|ঘুমাও|বন্ধ কর/;
+const RESUME=/\b(resume|wake up|start listening|continue)\b|জাগো|শুরু কর|চালু কর/;
+function brain(text){
+  const bn=isBangla(text),t=text.toLowerCase(),now=new Date();
+  const time=now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  const date=now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  const R=(b,e)=>bn?{l:'bn-BD',t:b}:{l:'en-US',t:e};
+  if(PAUSE.test(t)){paused=true;return R('ঠিক আছে Boss, আমি চুপ থাকছি। জাগাতে বলবেন "জাগো"।',"Okay Boss, I'll be quiet. Say wake up when you need me.");}
+  if(/weather|আবহাওয়া|ওয়েদার/.test(t))return R('আবহাওয়ার তথ্য পরের আপডেটে যোগ হবে, Boss।','Weather is coming in a later update, Boss.');
+  if(/how are you|কেমন আছ|কি খবর|কী খবর/.test(t))return R('আমি ভালো আছি, Boss। আপনাকে কীভাবে সাহায্য করতে পারি?',"I'm doing great, Boss. How can I help you?");
+  if(/time|সময়|কয়টা|কটা/.test(t))return R('এখন সময় '+time+', Boss।',"It's "+time+", Boss.");
+  if(/date|today|তারিখ|আজ কত/.test(t))return R('আজ '+date+', Boss।','Today is '+date+', Boss.');
+  if(/hello|\bhi\b|\bhey\b|হ্যালো|হাই|সালাম/.test(t))return R('হাই Boss, কী খবর?',"Hi Boss, what's up?");
+  return R('বুঝেছি Boss, কিন্তু আমার AI মস্তিষ্ক এখনো যুক্ত হয়নি।',"I heard you, Boss, but my AI brain isn't connected yet.");
+}
+
+/* ---------- Speaking (with a safety timer so Buddy never gets stuck deaf) ---------- */
+function speak(r){
+  let finished=false;
+  const done=()=>{if(finished)return;finished=true;busy=false;activity();setState(paused?'paused':(running?'listening':'error'));startRec();};
+  if(!window.speechSynthesis||!window.SpeechSynthesisUtterance){done();return;}
+  try{
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(r.t);u.lang=r.l;
+    const v=speechSynthesis.getVoices().find(v=>v.lang.replace('_','-').startsWith(r.l.slice(0,2)));
+    if(v)u.voice=v;
+    u.onstart=()=>{lastAct=Date.now();setState('speaking');};
+    u.onend=done;u.onerror=done;
+    speechSynthesis.speak(u);
+  }catch(e){done();return;}
+  setTimeout(done,3000+r.t.length*120);          // if the phone never says "finished", carry on anyway
+}
+function handle(text){
+  if(busy)return;
+  if(paused){                                    // while paused, only the wake-up command works
+    if(RESUME.test(text.toLowerCase())){
+      paused=false;busy=true;lastAct=Date.now();try{rec&&rec.abort();}catch(e){}
+      setState('thinking');
+      const r=isBangla(text)?{l:'bn-BD',t:'আমি ফিরে এসেছি, Boss।'}:{l:'en-US',t:"I'm back, Boss."};
+      lang=r.l;setTimeout(()=>speak(r),400);
+    }
+    return;
+  }
+  busy=true;lastAct=Date.now();
+  try{rec&&rec.abort();}catch(e){}               // stop listening so Buddy doesn't hear itself
+  setState('thinking');
+  const r=brain(text);lang=r.l;
+  setTimeout(()=>speak(r),600);
+}
+
+/* ---------- Buddy says out loud why it cannot hear ---------- */
+const SAID={};
+function explain(code){
+  const msg={'not-allowed':"Microphone is blocked, Boss. Please allow the microphone for this page.",
+    'service-not-allowed':"The speech service is turned off on this phone, Boss.",
+    'network':"I need internet to hear you, Boss.",
+    'audio-capture':"I can't find a microphone, Boss.",
+    'no-api':"This browser can't listen, Boss. Please open me in Chrome."}[code];
+  if(!msg||busy||Date.now()-(SAID[code]||0)<60000)return;
+  SAID[code]=Date.now();busy=true;speak({l:'en-US',t:msg});
+}
+
+/* ---------- Listening (restarts itself) ---------- */
+function startRec(){
+  if(!SR||!running||busy)return;
+  try{rec&&rec.abort();}catch(e){}
+  rec=new SR();rec.lang=lang;rec.interimResults=true;rec.continuous=false;
+  rec.onstart=()=>{fails=0;if(!paused&&state!=='idle')setState('listening');else if(paused)setState('paused');};
+  rec.onspeechstart=()=>{if(!paused)activity();};
+  rec.onresult=e=>{
+    const res=e.results[e.results.length-1];noSpeech=0;fails=0;if(!paused)activity();
+    if(res.isFinal&&res[0].transcript.trim())handle(res[0].transcript.trim());
+  };
+  rec.onerror=e=>{
+    lastErr=e.error;dbg();
+    if(e.error==='no-speech'||e.error==='aborted'){if(e.error==='no-speech'&&++noSpeech>=3){noSpeech=0;lang=lang==='bn-BD'?'en-US':'bn-BD';}}
+    else if(e.error==='not-allowed'||e.error==='service-not-allowed'){running=false;started=false;setState('error');explain(e.error);}  // touch again to retry
+    else if(e.error==='language-not-supported'){lang='en-US';}
+    else{fails++;setState('error');explain(e.error);}   // network / audio-capture problems
+  };
+  rec.onend=()=>{if(running&&!busy)setTimeout(startRec,fails>=2?2500:300);};
+  try{rec.start();}catch(e){lastErr='start:'+e.name;dbg();fails++;if(running&&!busy)setTimeout(startRec,1500);}
+}
+
+/* ---------- Camera: simple motion tracking (video stays on the phone) ---------- */
+let prev=null,lx=0,ly=0,tx=0,ty=0,lastMotion=0,waveN=0,lastWave=0,camOn=false;
+const cv=document.createElement('canvas');cv.width=48;cv.height=36;const cctx=cv.getContext('2d');
+function startCam(){
+  if(camOn)return;
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){lastErr='no-camera-api';dbg();return;}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:320},height:{ideal:240}},audio:false}).then(stream=>{
+    camOn=true;const v=$('cam');v.srcObject=stream;if(v.play)v.play().catch(()=>{});
+    setInterval(watch,120);setInterval(drift,50);
+  }).catch(e=>{lastErr='camera:'+e.name;dbg();});
+}
+function watch(){
+  const v=$('cam');if(!v.videoWidth)return;
+  cctx.drawImage(v,0,0,48,36);
+  const d=cctx.getImageData(0,0,48,36).data,g=new Uint8Array(48*36);
+  let n=0,sx=0,sy=0;
+  for(let i=0;i<g.length;i++){
+    g[i]=(d[i*4]+d[i*4+1]+d[i*4+2])/3;
+    if(prev&&Math.abs(g[i]-prev[i])>30){n++;sx+=i%48;sy+=(i/48)|0;}
+  }
+  prev=g;const frac=n/g.length;
+  if(frac>0.015){                                   // something moves: look at it
+    lastMotion=Date.now();
+    let nx=-((sx/n/48-.5)*2),ny=(sy/n/36-.5)*2;     // front camera image is mirrored
+    if(window.innerHeight>window.innerWidth){const t=nx;nx=ny;ny=-t;}
+    tx=nx;ty=ny;
+    if(state==='idle')activity();
+  }
+  waveN=frac>0.10?waveN+1:0;                        // big movement for ~0.5 s = a wave
+  if(waveN>=4&&Date.now()-lastWave>10000){waveN=0;lastWave=Date.now();wave();}
+}
+function drift(){                                    // smooth eye movement
+  if(Date.now()-lastMotion>1500){tx*=.9;ty*=.9;}
+  const k=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--eye'))||80;
+  lx+=(tx*k*.35-lx)*.25;ly+=(ty*k*.25-ly)*.25;
+  const el=$('look');el.style.setProperty('--lx',lx.toFixed(1)+'px');el.style.setProperty('--ly',ly.toFixed(1)+'px');
+}
+function wave(){
+  if(busy||paused||!running)return;
+  busy=true;lastAct=Date.now();try{rec&&rec.abort();}catch(e){}
+  setState('happy');
+  const r=lang==='bn-BD'?{l:'bn-BD',t:'হাই Boss, কী খবর?'}:{l:'en-US',t:"Hi Boss, what's up?"};
+  setTimeout(()=>speak(r),500);
+}
+
+/* ---------- Start: ANY touch / click / key (Chrome requires one) ---------- */
+function begin(){
+  if(started)return;
+  started=true;
+  if(!SR){lastErr='no-speech-api';setState('error');started=false;explain('no-api');return;}
+  running=true;lastAct=Date.now();
+  try{speechSynthesis.getVoices();}catch(e){}
+  try{document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen().catch(()=>{});}catch(e){}
+  try{navigator.wakeLock&&navigator.wakeLock.request('screen').catch(()=>{});}catch(e){}
+  setState('listening');setTimeout(startCam,2500);
+  busy=true;speak({l:'en-US',t:"Hello Boss. I'm ready."});   // greeting, then it starts listening by itself
+}
+['pointerdown','touchstart','touchend','mousedown','click','keydown'].forEach(ev=>window.addEventListener(ev,begin,true));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&running&&!busy)startRec();});
+dbg();
+</script>
+</body>
+</html>
