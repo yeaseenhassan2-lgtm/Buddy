@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Buddy</title>
+<style>
+  :root { --u: min(1vw, 1.6vh); }
+  * { box-sizing: border-box; margin: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+
+  /* ---- Face ---- */
+  .face { display: flex; flex-direction: column; align-items: center; gap: calc(var(--u) * 7); cursor: pointer; user-select: none; }
+  .eyes { display: flex; gap: calc(var(--u) * 20); }
+  .eye {
+    width: calc(var(--u) * 17); height: calc(var(--u) * 24);
+    background: #fff; border-radius: 42%;
+    transition: transform .35s ease, box-shadow .35s ease, height .35s ease;
+    animation: blink 5s infinite;
+  }
+  .mouth {
+    width: calc(var(--u) * 13); height: calc(var(--u) * 6);
+    border-bottom: calc(var(--u) * 1.4) solid #fff;
+    border-radius: 0 0 50% 50%;
+    transition: width .3s ease, height .3s ease;
+  }
+  @keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 96% { transform: scaleY(.08); } }
+
+  /* ---- States ---- */
+  .listening .eye { box-shadow: 0 0 calc(var(--u) * 6) rgba(255,255,255,.55); height: calc(var(--u) * 27); }
+  .listening .mouth { width: calc(var(--u) * 9); }
+
+  .thinking .eyes { animation: look 1.6s ease-in-out infinite; }
+  .thinking .mouth { width: calc(var(--u) * 6); height: 0; border-radius: 0; }
+  @keyframes look { 0%, 100% { transform: translateX(calc(var(--u) * -3)); } 50% { transform: translateX(calc(var(--u) * 3)); } }
+
+  .speaking .mouth { animation: talk .28s ease-in-out infinite alternate; border: calc(var(--u) * 1.4) solid #fff; border-top-color: transparent; }
+  @keyframes talk { from { height: calc(var(--u) * 3); } to { height: calc(var(--u) * 9); width: calc(var(--u) * 11); } }
+
+  .paused .eye { animation: none; transform: scaleY(.1); }
+  .paused .mouth { width: calc(var(--u) * 8); height: 0; border-radius: 0; }
+
+  /* ---- Controls ---- */
+  .bar { position: fixed; bottom: max(2.2vh, env(safe-area-inset-bottom)); display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button {
+    background: transparent; color: #cfcfcf; border: 1px solid #3a3a3a; border-radius: 999px;
+    padding: 9px 16px; font-size: 14px; font-family: inherit; cursor: pointer;
+  }
+  button:hover, button:focus-visible { border-color: #fff; color: #fff; outline: none; }
+  .status { position: fixed; top: max(2.2vh, env(safe-area-inset-top)); font-size: 14px; color: #8a8a8a; min-height: 1.2em; text-align: center; padding: 0 16px; }
+
+  @media (prefers-reduced-motion: reduce) { .eye, .eyes, .mouth { animation: none !important; } }
+</style>
+</head>
+<body>
+  <div class="status" id="status" aria-live="polite">স্ক্রিনে ট্যাপ করে কথা শুরু করো</div>
+
+  <div class="face" id="face" role="button" tabindex="0" aria-label="Buddy">
+    <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+    <div class="mouth"></div>
+  </div>
+
+  <div class="bar">
+    <button id="langBtn" type="button">বাংলা</button>
+    <button id="voiceBtn" type="button">নারী কণ্ঠ</button>
+    <button id="pauseBtn" type="button">থামাও</button>
+  </div>
+
+<script>
+/* ===== Settings ===== */
+// Later: put your Render backend URL here (the Node.js Web Service), e.g. "https://buddy-api.onrender.com"
+// Leave empty to use the simple built-in replies for now.
+const API_URL = "";
+
+const face = document.getElementById("face");
+const statusEl = document.getElementById("status");
+const langBtn = document.getElementById("langBtn");
+const voiceBtn = document.getElementById("voiceBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+
+let lang = "bn";          // "bn" or "en"
+let voiceGender = "female";
+let active = false;       // conversation running
+let busy = false;         // thinking or speaking
+let rec = null;
+const history = [];
+
+const LANG_CODE = { bn: "bn-BD", en: "en-US" };
+
+function setState(s, text) {
+  face.className = "face " + (s || "");
+  if (text !== undefined) statusEl.textContent = text;
+}
+
+/* ===== Speech recognition ===== */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function listen() {
+  if (!active || busy) return;
+  if (!SR) { setState("", "এই ব্রাউজারে মাইক সাপোর্ট নেই। Chrome ব্যবহার করো।"); return; }
+  rec = new SR();
+  rec.lang = LANG_CODE[lang];
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  let heard = false;
+  rec.onstart = () => setState("listening", lang === "bn" ? "শুনছি…" : "Listening…");
+  rec.onresult = (e) => {
+    heard = true;
+    const text = e.results[0][0].transcript.trim();
+    if (text) respond(text);
+  };
+  rec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      active = false;
+      setState("paused", "মাইকের অনুমতি দাও (address bar-এর পাশে তালা আইকনে)");
+    }
+  };
+  rec.onend = () => { if (active && !busy && !heard) setTimeout(listen, 300); };
+  try { rec.start(); } catch (_) {}
+}
+
+/* ===== Brain ===== */
+async function respond(userText) {
+  busy = true;
+  setState("thinking", lang === "bn" ? "ভাবছি…" : "Thinking…");
+  history.push({ role: "user", content: userText });
+  let reply;
+  try {
+    reply = API_URL ? await askServer(userText) : localReply(userText);
+  } catch (err) {
+    reply = lang === "bn" ? "একটু সমস্যা হলো, আবার বলো তো।" : "Something went wrong, could you say that again?";
+  }
+  history.push({ role: "assistant", content: reply });
+  speak(reply);
+}
+
+async function askServer() {
+  const r = await fetch(API_URL.replace(/\/$/, "") + "/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: history.slice(-12), lang })
+  });
+  if (!r.ok) throw new Error("server " + r.status);
+  const data = await r.json();
+  return data.reply;
+}
+
+// Simple placeholder replies until the OpenAI backend is connected.
+function localReply(t) {
+  const s = t.toLowerCase();
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  if (lang === "bn") {
+    if (/হাই|হ্যালো|সালাম|কেমন/.test(s)) return pick(["হাই! কেমন আছো?", "হ্যালো! আজ কী খবর?", "আরে, তুমি! বলো কী করছো?"]);
+    if (/নাম/.test(s)) return pick(["আমি Buddy, তোমার বন্ধু।", "আমার নাম Buddy। তোমারটা কী?"]);
+    return pick(["বুঝতে পারছি। একটু বিস্তারিত বলবে?", "ঠিক আছে, আরেকটু বলো তো।", "হুম, মজার কথা। তারপর?"]);
+  }
+  if (/hi|hello|hey|how are/.test(s)) return pick(["Hey! How are you doing?", "Hello! What's up today?", "Hi there! What are you up to?"]);
+  if (/name/.test(s)) return pick(["I'm Buddy, your friend.", "My name's Buddy. What's yours?"]);
+  return pick(["I hear you. Tell me a bit more?", "Okay, go on.", "Interesting. And then?"]);
+}
+
+/* ===== Speech output ===== */
+function pickVoice() {
+  const voices = speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith(lang));
+  const femaleHint = /female|woman|zira|samantha|susan|google.*(us|bn)|heera|tanishaa|nabanita/i;
+  const maleHint = /male|man|david|mark|daniel|james|bashkar|pradeep/i;
+  const hint = voiceGender === "female" ? femaleHint : maleHint;
+  return voices.find(v => hint.test(v.name)) || voices[0] || null;
+}
+
+function speak(text) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = LANG_CODE[lang];
+  const v = pickVoice();
+  if (v) u.voice = v;
+  u.pitch = voiceGender === "female" ? 1.15 : 0.8;
+  u.rate = 1;
+  u.onstart = () => setState("speaking", "");
+  const done = () => { busy = false; if (active) listen(); else setState("paused", "থেমে আছি"); };
+  u.onend = done;
+  u.onerror = done;
+  speechSynthesis.speak(u);
+}
+speechSynthesis.onvoiceschanged = () => {};
+
+/* ===== Controls ===== */
+function start() {
+  active = true;
+  pauseBtn.textContent = "থামাও";
+  if (!busy) listen();
+}
+function stop() {
+  active = false;
+  busy = false;
+  speechSynthesis.cancel();
+  try { rec && rec.abort(); } catch (_) {}
+  setState("paused", "থেমে আছি। ট্যাপ করলে আবার শুরু হবে");
+  pauseBtn.textContent = "শুরু করো";
+}
+
+face.addEventListener("click", () => { active ? null : start(); });
+face.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); active ? null : start(); } });
+pauseBtn.addEventListener("click", () => (active ? stop() : start()));
+
+langBtn.addEventListener("click", () => {
+  lang = lang === "bn" ? "en" : "bn";
+  langBtn.textContent = lang === "bn" ? "বাংলা" : "English";
+  document.documentElement.lang = lang;
+  if (active) { try { rec && rec.abort(); } catch (_) {} if (!busy) setTimeout(listen, 200); }
+});
+voiceBtn.addEventListener("click", () => {
+  voiceGender = voiceGender === "female" ? "male" : "female";
+  voiceBtn.textContent = voiceGender === "female" ? "নারী কণ্ঠ" : "পুরুষ কণ্ঠ";
+});
+</script>
+</body>
+</html>
